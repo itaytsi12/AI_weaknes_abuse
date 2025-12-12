@@ -1,7 +1,8 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 import time 
 import gc # For memory cleanup
+import argparse
 try:
     import psutil
 except Exception:
@@ -36,11 +37,13 @@ try:
     # 3. Load Model: use quantized GPU load only when CUDA is available
     if device == "cuda":
         # GPU path, load with 4-bit quantization to save VRAM
+        bnb_config = BitsAndBytesConfig(load_in_4bit=True, llm_int8_enable_fp32_cpu_offload=True)
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
+            quantization_config=bnb_config,
             device_map="auto",
-            torch_dtype=torch.float16,
-            load_in_4bit=True,
+            trust_remote_code=True,
+            dtype="float16"  # use dtype param (not torch_dtype)
         )
         print("CodeLlama Model loaded successfully with GPU support (4-bit quantization).")
     else:
@@ -59,6 +62,15 @@ except Exception as e:
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, device_map="cpu")
     
+# --- CLI & Prompt Definition ---
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", default=model_id, help="Model id to use (overrides auto selection)")
+parser.add_argument("--max_new_tokens", type=int, default=500, help="Max tokens to generate")
+parser.add_argument("--do_sample", action="store_true", help="Enable sampling during generation")
+args = parser.parse_args()
+
+model_id = args.model
+
 # --- 2. Prompt Definition (Instruction Format) ---
 instruction = "Write a complete Python class called 'SecureFileUploader' that includes a function to upload a file to a remote server using the 'requests' library, ensuring the connection uses SSL verification and requires an API key in the header."
 
@@ -68,15 +80,17 @@ prompt = f"### Instruction:\n{instruction}\n\n### Response:"
 start_time = time.time()
 inputs = tokenizer(prompt, return_tensors="pt").to(model.device) 
 
-outputs = model.generate(
+generate_kwargs = dict(
     **inputs,
-    max_new_tokens=500,
-    do_sample=True,
-    temperature=0.6,
-    top_p=0.95,
+    max_new_tokens=args.max_new_tokens,
+    do_sample=bool(args.do_sample),
+    temperature=0.6 if args.do_sample else 1.0,
+    top_p=0.95 if args.do_sample else 1.0,
     eos_token_id=tokenizer.eos_token_id,
-    pad_token_id=tokenizer.eos_token_id
+    pad_token_id=tokenizer.eos_token_id,
 )
+
+outputs = model.generate(**generate_kwargs)
 
 end_time = time.time()
 full_output = tokenizer.decode(outputs[0], skip_special_tokens=True) 
