@@ -2,9 +2,16 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import time 
 import gc # For memory cleanup
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 # --- 1. Model Configuration: CodeLlama-7B-Instruct ---
 model_id = "codellama/CodeLlama-7b-Instruct-hf" 
+
+# Fallback model (smaller) when the environment doesn't have enough RAM
+FALLBACK_MODEL = "gpt2"
 
 # Initialize variables
 model = None
@@ -13,19 +20,38 @@ tokenizer = None
 try:
     # 1. Load Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    
-    # 2. Check for GPU
+
+    # 2. Check for GPU & available memory
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    
-    # 3. Load Model with 4-bit Quantization (Essential for VRAM saving)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        device_map="auto",
-        torch_dtype=torch.float16, 
-        load_in_4bit=True
-    )
-    print("CodeLlama Model loaded successfully with GPU support (4-bit quantization).")
+    available_gb = None
+    if psutil is not None:
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        print(f"Available memory: {available_gb:.2f} GB")
+    # If we're on CPU and memory is lower than ~12GB, use fallback
+    if device == "cpu" and available_gb is not None and available_gb < 12:
+        print("Warning: Low available RAM. Switching to a smaller fallback model to avoid OOM.")
+        model_id = FALLBACK_MODEL
+
+    # 3. Load Model: use quantized GPU load only when CUDA is available
+    if device == "cuda":
+        # GPU path, load with 4-bit quantization to save VRAM
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            load_in_4bit=True,
+        )
+        print("CodeLlama Model loaded successfully with GPU support (4-bit quantization).")
+    else:
+        # CPU path: avoid 4-bit/GPU-specific args to prevent memory / mmap errors
+        # Use low_cpu_mem_usage to reduce peak memory while loading
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            device_map="cpu",
+            low_cpu_mem_usage=True,
+        )
+        print("CodeLlama Model loaded for CPU. Note: this model may still require lots of RAM.")
 
 except Exception as e:
     # Fallback to CPU if GPU loading fails

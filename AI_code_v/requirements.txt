@@ -4,3 +4,4 @@ accelerate
 bitsandbytes
 safetensors
 requests
+psutil
