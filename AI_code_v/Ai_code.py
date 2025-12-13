@@ -23,7 +23,7 @@ args = parser.parse_args()
 model_id = args.model
 
 # Fallback model (smaller) when the environment doesn't have enough RAM
-FALLBACK_MODEL = "distilgpt2"
+FALLBACK_MODEL = "bigscience/bloomz-560m"
 
 # Initialize variables
 model = None

@@ -27,7 +27,11 @@ python AI_code_v/Ai_code.py --model distilgpt2 --max_new_tokens 64 --do_sample
 Fine-tune with LoRA (requires `--train_data` and a GPU):
 
 ```bash
-python AI_code_v/Ai_code.py --train --train_data path/to/train.jsonl --model Salesforce/codegen-350M-mono
+# Use train_lora.py for simple, isolated LoRA fine-tuning
+python train_lora.py --base_model Salesforce/codegen-350M-mono --train_data data/example_train.jsonl --output_dir lora-checkpoint
+
+# Or run training using AI_code_v/Ai_code.py (opt-in)
+python AI_code_v/Ai_code.py --train --train_data data/example_train.jsonl --model Salesforce/codegen-350M-mono
 ```
 
 Notes:
