@@ -16,6 +16,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--model", default="codellama/CodeLlama-7b-Instruct-hf", help="Model id to use (overrides auto selection)")
 parser.add_argument("--max_new_tokens", type=int, default=500, help="Max tokens to generate")
 parser.add_argument("--do_sample", action="store_true", help="Enable sampling during generation")
+parser.add_argument("--train", action="store_true", help="Run LoRA training script")
+parser.add_argument("--train_data", default=None, help="Path to JSONL training file for LoRA (optional)")
 args = parser.parse_args()
 
 model_id = args.model
@@ -139,56 +141,58 @@ if model is not None and tokenizer is not None:
     gc.collect() 
     print("Cleanup complete. GPU VRAM should be freed.")
 
-# --- LoRA Fine-Tuning ---
-MODEL="Salesforce/codegen-350M-mono"
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = AutoModelForCausalLM.from_pretrained(MODEL)
+# --- LoRA Fine-Tuning (opt-in) ---
+if args.train:
+    MODEL = "Salesforce/codegen-350M-mono"
+    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    model = AutoModelForCausalLM.from_pretrained(MODEL)
 
-# Prepare model for k-bit training if using bnb or quantized
-# prepare_model_for_kbit_training(model)
+    # Prepare model for k-bit training if using bnb or quantized
+    # prepare_model_for_kbit_training(model)
 
-lora_config = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    target_modules=["q_proj","v_proj","k_proj","o_proj"],
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM",
-)
-model = get_peft_model(model, lora_config)
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=32,
+        target_modules=["q_proj","v_proj","k_proj","o_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, lora_config)
 
-# Dataset: load JSONL with fields "input" and "output"
-ds = load_dataset("json", data_files="/path/to/your/jsonl")
-def prepare(examples):
-    prompts = ["<BOS>" + i + o for i,o in zip(examples["input"], examples["output"])]
-    tokens = tokenizer(prompts, truncation=True, padding="max_length", max_length=512)
-    return tokens
+    # Dataset: load JSONL with fields "input" and "output"
+    if args.train_data is None:
+        raise ValueError("--train_data must be provided when --train is set")
+    ds = load_dataset("json", data_files=args.train_data)
 
-tokenized = ds.map(prepare, batched=True)
+    def prepare(examples):
+        prompts = ["<BOS>" + i + o for i, o in zip(examples["input"], examples["output"])]
+        tokens = tokenizer(prompts, truncation=True, padding="max_length", max_length=512)
+        return tokens
 
-data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
-training_args = TrainingArguments(
-    output_dir="lora-checkpoint",
-    per_device_train_batch_size=2,
-    num_train_epochs=3,
-    logging_steps=10,
-    save_steps=200,
-    fp16=True # if you have GPU, otherwise omit
-)
+    tokenized = ds.map(prepare, batched=True)
 
-trainer = Trainer(model=model, args=training_args, train_dataset=tokenized['train'], data_collator=data_collator)
-trainer.train()
-trainer.save_model("lora-trained")
+    data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    training_args = TrainingArguments(
+        output_dir="lora-checkpoint",
+        per_device_train_batch_size=2,
+        num_train_epochs=3,
+        logging_steps=10,
+        save_steps=200,
+        fp16=True  # if you have GPU, otherwise omit
+    )
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
+    trainer = Trainer(model=model, args=training_args, train_dataset=tokenized["train"], data_collator=data_collator)
+    trainer.train()
+    trainer.save_model("lora-trained")
 
-base = "Salesforce/codegen-350M-mono"
-tokenizer = AutoTokenizer.from_pretrained(base)
-base_model = AutoModelForCausalLM.from_pretrained(base, device_map="auto")
-model = PeftModel.from_pretrained(base_model, "lora-trained") # path to saved PEFT folder
+    # demonstration inference after training (optional)
+    base = MODEL
+    tokenizer = AutoTokenizer.from_pretrained(base)
+    base_model = AutoModelForCausalLM.from_pretrained(base, device_map="auto")
+    model = PeftModel.from_pretrained(base_model, "lora-trained")  # path to saved PEFT folder
 
-text = "Your instruction or prompt here"
-tokens = tokenizer(text, return_tensors="pt").to(model.device)
-out = model.generate(**tokens, max_new_tokens=128)
-print(tokenizer.decode(out[0], skip_special_tokens=True))
+    text = "Your instruction or prompt here"
+    tokens = tokenizer(text, return_tensors="pt").to(model.device)
+    out = model.generate(**tokens, max_new_tokens=128)
+    print(tokenizer.decode(out[0], skip_special_tokens=True))
